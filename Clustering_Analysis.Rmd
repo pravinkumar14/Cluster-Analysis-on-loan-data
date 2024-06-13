@@ -1,0 +1,844 @@
+---
+title: "Cluster Analysis on loan data"
+output: html_document
+date: "2024-02-28"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(lubridate)
+library(corrplot)
+library(psych)
+library(GPArotation)
+```
+
+## Data Preparation
+
+```{r}
+# Import data
+df <- read_xlsx("loan_data_ADA_assignment.xlsx",sheet="in")
+```
+
+```{r}
+# Check structure and summary
+str(df)
+summary(df)
+```
+
+## check distribution
+```{r}
+# Check if each customer id is unique
+n_distinct(df$member_id)
+```
+There are no repeat customers, and each loan is taken by a unique customer.
+
+```{r}
+# Check the distribution of loan amount (numeric continuous variable) in histogram
+ggplot(df) + geom_histogram(aes(loan_amnt), binwidth=1000) +
+  labs(y = "Count", x = "Loan Amount", title = "Distribution of Applied Loan Amount")
+```
+
+```{r}
+# Check the distribution of funded amount (numeric continuous variable) in histogram
+ggplot(df) + 
+  geom_histogram(aes(funded_amnt), binwidth=1000) +
+  labs(y = "Count", x = "Funded Amount", title = "Distribution of Funded Amount")
+```
+
+We can see there is not much difference in the distribution between loan_amnt and funded_amnt. Hence, most customers receive the exact loan amount they applied for except for a small number of exceptions. Hence, we choose to use funded_amnt.
+
+
+```{r}
+# Compare the value of loan_amnt to funded_amnt
+sum(df$funded_amnt < df$loan_amnt)
+
+# 34 cases where actual funded amount is smaller than loan amount (really small percentage)
+
+df_diff <- filter(df, funded_amnt < loan_amnt)
+
+df_diff <- mutate(df_diff, difference = loan_amnt-funded_amnt)
+
+ggplot(df_diff) + 
+  geom_histogram(aes(difference), binwidth=1000) +
+  labs(y = "Count", x = "Difference between Loan Amount and Funded Amount", title = "Distribution of Difference between Loan Amount and Funded Amount")
+
+```
+
+Despite there is only 34 cases, the difference between applied loan amount and funded amount is not negligible amount, the magnitude of the difference is quite significant. Hence, we will be including the calculated difference between applied loan amount and actual funded amount.
+
+```{r}
+# Check the distribution of term (categorical variable) in bar chart
+df$term <- as.factor(df$term)
+
+ggplot(df,aes(x = term)) + geom_bar() +
+  labs(y = "Count", x = "Term (in months)", title = "Bar Chart of Loan Term")
+```
+
+```{r}
+# Check the distribution of employment length
+ggplot(df) + geom_histogram(aes(emp_length), binwidth=1) +
+  labs(y = "Count", x = "Employment Length", title = "Distribution of Employment Length")
+
+```
+
+Most customers are employed for around 10 years.
+
+```{r}
+# Check the distribution of grade and sub-grade
+df$grade <- as.factor(df$grade)
+
+ggplot(df,aes(x = grade)) + geom_bar() +
+  labs(y = "Count", x = "Grade", title = "Bar Chart of Grade")
+
+df$sub_grade <- as.factor(df$sub_grade)
+
+ggplot(df,aes(x = sub_grade)) + geom_bar() +
+  labs(y = "Count", x = "Sub-Grade", title = "Bar Chart of Sub-Grade") +
+    scale_x_discrete(guide = guide_axis(angle = 90))
+
+```
+
+Most customers are centered around low A to high C range, with the highest number of customers in grade B.
+
+```{r}
+# Check the distribution of loan status
+df$loan_status <- as.factor(df$loan_status)
+
+ggplot(df,aes(x = loan_status)) + geom_bar() +
+  labs(y = "Count", x = "Loan Status", title = "Bar Chart of Loan Status")
+
+```
+
+Most customers are past customers with a small number of 'current' customers. Majority fall under the 'fully paid' category. 'Good debt' consists of 'current' and 'fully paid' customers.'bad debt' consists of 'charged off', 'default', 'in grace period' and 'late' customers, taking up 15.6% of the population.
+
+```{r}
+# Check the distribution of loan purpose
+df$purpose <- as.factor(df$purpose)
+
+ggplot(df,aes(x = purpose)) + geom_bar() +
+  labs(y = "Count", x = "Loan Purpose", title = "Bar Chart of Loan Purpose") +
+  scale_x_discrete(guide = guide_axis(angle = 45))
+
+```
+
+Most customers take loans for debt consolidation (highest number) or to repay credit card debt (runner-up).
+
+```{r}
+# Check the distribution of interest rate
+ggplot(df) + geom_histogram(aes(int_rate), binwidth=1, col="white") +
+  scale_x_continuous(breaks=seq(5,26,1))
+  labs(y = "Count", x = "Interest Rate", title = "Distribution of Interest Rate")
+
+```
+
+Interest rate ranges from 6% to 25%, with the highest count around 13-14%.
+
+```{r}
+# Check the distribution of debt to income ratio
+ggplot(df) +geom_histogram(aes(dti), binwidth=1, col="white") +
+  scale_x_continuous(breaks=seq(-1,36,1)) +
+  labs(y = "Count", x = "dti", title = "Distribution of Debt to Income Ratio (dti)")
+
+```
+
+Distribution is symmetrical and clustered around 17. This means that on average, borrower’s total monthly debt payments on the total debt obligations, excluding mortgage and the requested LC loan, is 17 times of their monthly income.
+
+
+```{r}
+# Check the distribution of revolving line utilization rate
+ggplot(df) + geom_histogram(aes(revol_util), binwidth=0.03,col="white") +
+  scale_x_continuous(breaks=seq(0,1.1, 0.1)) +
+  labs(y = "Count", x = "Revolving line utilisation rate", title = "Distribution of Revolving Line Utilisation Rate")
+
+```
+Histogram is right-skewed towards 1, suggesting the most customers spend a relatively high % of the credit lines they have taken
+
+```{r}
+# Check the distribution of annual income (numeric continuous variable) in histogram
+ggplot(df) + geom_histogram(aes(annual_inc), binwidth=10000) +
+  labs(y = "Count", x = "Annual Income", title = "Distribution of Annual Income")
+
+top_income <- top_n(df, 50, df$annual_inc)
+```
+
+Interesting thing to note is there are a very small number (around 7) of people with extremely high annual income above 1000k, that are outliers, but their income are verified. The top customers with the highest income tend to be verified. Hence, we do not remove these outliers as their income are reliable and they could be a potential minority group of customers.
+
+
+```{r}
+# Check the distribution of annual income without outliers
+matching_rows <- df$id %in% top_income$id
+
+# Remove the subset rows from the population
+without_outliers <- df[!matching_rows, ]
+
+# Distribution of annual income without outliers
+ggplot(without_outliers) + geom_histogram(aes(annual_inc), binwidth=10000) +
+  labs(y = "Count", x = "Annual Income", title = "Distribution of Annual Income")
+```
+
+```{r}
+# Detect NA value
+sum(is.na(df))
+
+# There are 228899 empty cells in df
+
+sum(rowSums(is.na(df)) > 0)
+# There are 49941 rows with at least an empty cell in its row
+
+sum(rowSums(is.na(df)) > 0)/nrow(df)
+# 99.8% of rows have at least an empty cell in its row
+```
+
+```{r}
+# Check the percentage of missing data of the column mths_since_last_delinq
+sum(is.na(df$mths_since_last_delinq))/nrow(df)
+
+df$mths_since_last_delinq[is.na(df$mths_since_last_delinq)] <- mean(df$mths_since_last_delinq, na.rm = TRUE)
+```
+
+Because the percentage of missing data is not very high (56.2%), we do not drop the column and instead replace NA values with the mean.
+
+```{r}
+# Check the percentage of missing data of the column mths_since_last_record
+sum(is.na(df$mths_since_last_record))/nrow(df)
+
+```
+
+Because the percentage of missing data is high (94.9%), we drop the column.
+
+```{r}
+# Check the percentage of missing data of the column mths_since_last_major_derog
+sum(is.na(df$mths_since_last_major_derog))/nrow(df)
+
+```
+
+Because the percentage of missing data is high (85.8%), we drop the column.
+
+```{r}
+# Check the percentage of missing data of the column emp_length
+sum(is.na(df$emp_length))/nrow(df)
+
+df$emp_length[is.na(df$emp_length)] <- mean(df$emp_length, na.rm = TRUE)
+```
+
+Because the percentage of missing data is low (3.6%), we do not drop the column and instead replace NA values with the mean.
+
+```{r}
+# Check the percentage of missing data of the column revol_util
+sum(is.na(df$revol_util))/nrow(df)
+
+df$revol_util[is.na(df$revol_util)] <- mean(df$revol_util, na.rm = TRUE)
+```
+Because the percentage of missing data is very low (0.062%), we do not drop the column and instead replace NA values with the mean.
+
+```{r}
+# Check the percentage of missing data of the columns tot_coll_amt, tot_cur_bal and total_credit_rv
+sum(is.na(df$tot_coll_amt))/nrow(df)
+sum(is.na(df$tot_cur_bal))/nrow(df)
+sum(is.na(df$total_credit_rv))/nrow(df)
+```
+
+There are the same number of missing data rows for tot_coll_amt, tot_cur_bal and total_credit_rv. Upon closer inspection, we realise that they all belong to the same rows.
+
+
+```{r}
+df$tot_coll_amt[is.na(df$tot_coll_amt)] <- mean(df$tot_coll_amt, na.rm = TRUE)
+df$tot_cur_bal[is.na(df$tot_cur_bal)] <- mean(df$tot_cur_bal, na.rm = TRUE)
+df$total_credit_rv[is.na(df$total_credit_rv)] <- mean(df$total_credit_rv, na.rm = TRUE)
+```
+
+Because the percentage of missing data is not very high (29.2%), we do not drop the column and instead replace NA values with the mean of the remaining available data in that column.
+
+## Feature engineering: Create calculated fields
+```{r}
+# create no. of months since last credit pull (numeric variable)
+df$months_since_last_credit_pull <- (interval((df$issue_d), (df$last_credit_pull_d)) %/% months(1))
+
+```
+
+
+```{r}
+# Made a list of column that need to drop
+
+drop_column <- c('id','member_id','funded_amnt_inv','emp_title','issue_d','desc','title','zip_code','earliest_cr_line','total_pymnt_inv','total_rec_prncp','total_rec_int','total_rec_late_fee','recoveries','collection_recovery_fee','last_pymnt_d','last_pymnt_amnt','next_pymnt_d','collections_12_mths_ex_med','policy_code','addr_state','term','home_ownership','verification_status','purpose','loan_is_bad','pymnt_plan','grade','mths_since_last_major_derog','mths_since_last_record', 'last_credit_pull_d')
+
+# We drop "grade" because it is highly correlated with "sub-grade", and "sub-grade" provides more information than "grade"
+
+# We drop "loan_amnt" after we have used it to calculate "loan-funded amnt"
+
+# We drop "last_credit_pull_d" because it is a date variable and not numeric. 
+```
+
+```{r}
+# Drop the columns
+df2 <- df %>% select(-drop_column)
+
+# Drop missing data
+df3 <- na.omit(df2)
+
+sum(is.na(df3))
+# All missing data has been filled, no NAs
+```
+
+```{r}
+# Integer encoding for 'subgrade'
+
+df3$sub_grade <- dplyr::recode(df3$sub_grade,"A1"=35,"A2"=34,"A3"=33,"A4"=32,"A5"=31,"B1"=30,"B2"=29,"B3"=28,"B4"=27,"B5"=26,"C1"=25,"C2"=24,"C3"=23,"C4"=22,"C5"=21,"D1"=20,"D2"=19,"D3"=18,"D4"=17,"D5"=16,"E1"=15,"E2"=14,"E3"=13,"E4"=12,"E5"=11,"F1"=10,"F2"=9,"F3"=8,"F4"=7,"F5"=6,"G1"=5,"G2"=4,"G3"=3,"G4"=2,"G5"=1)
+```
+
+```{r}
+# Loan Status. Check its level.
+df3$loan_status <- as.factor(df3$loan_status)
+levels(df3$loan_status)
+
+# Level still based on assumption
+df3$loan_status <- dplyr::recode(df3$loan_status,"Charged Off"=1,"Late (31-120 days)"=2,"Late (16-30 days)"=3,"In Grace Period"=4, "Fully Paid"=5,"Current"=6)
+```
+
+## Checking Correlation and Multicollinearity 
+
+Utilizing Spearman correlation with our assumption of normal data distribution, where "r" represents the correlation coefficient:
+
+* $r=1$ is a perfect positive correlation. 
+* $r=0$ means no correlation. 
+* $r= -1$ means a perfect negative correlation. 
+
+```{r}
+
+numeric_sample <- as.data.frame(lapply(df3, as.numeric))
+correlation_matrix_spearman <- cor(numeric_sample, method = "spearman")
+print(correlation_matrix_spearman)
+
+# Visualize Spearman correlation matrix using corrplot
+corrplot(correlation_matrix_spearman, method = "color")
+corrplot(correlation_matrix_spearman, method = "color", addCoef.col = "black",
+         tl.col = "black", tl.srt = 45, tl.cex = 0.6, number.cex = 0.4, mar = c(0,0,1,0),width = 30, height = 30)
+```
+
+```{r}
+# Drop the columns that are highly correlated
+#drop_col <- c('installment_norm', 'mths_since_last_delinq', 'total_pymnt_norm', 'open_acc', 'loan_amnt_norm', 'tot_cur_bal_norm')
+#loan_data <- sample_norm_updated %>% select(-drop_col)
+
+drop_col_d3 <- c('installment', 'mths_since_last_delinq', 'total_pymnt', 'open_acc', 'loan_amnt') # NOTE: kept tot_cur_bal instead of removing it
+df4 <- df3 %>% select(-drop_col_d3)
+
+```
+
+
+```{r}
+lowerCor(df4)
+```
+
+
+```{r}
+# Check for correlation after removing the correlated columns
+numeric_sample <- as.data.frame(lapply(df4, as.numeric))
+correlation_matrix_spearman <- cor(numeric_sample, method = "spearman")
+print(correlation_matrix_spearman)
+
+# Visualize Spearman correlation matrix using corrplot
+corrplot(correlation_matrix_spearman, method = "color")
+corrplot(correlation_matrix_spearman, method = "color", addCoef.col = "black",
+         tl.col = "black", tl.srt = 45, tl.cex = 0.6,number.cex = 0.4, mar = c(0,0,1,0), width = 30, height = 30)
+```
+
+## Sampling
+```{r}
+# Make a sample 600
+set.seed(100)
+sample <- sample_n(df4, 600)
+head(sample)
+```
+
+## Data Normalization
+```{r}
+#Normalize the data 
+sample_norm <- as.data.frame(scale(sample))
+summary(sample_norm)
+```
+
+## Mahalanobi's
+
+For sample:
+```{r}
+Maha2 <- mahalanobis(sample, colMeans(sample), cov(sample))
+print(Maha2) # prints Mahalanobis distance
+MahaPvalue2 <-pchisq(Maha2, df=10,lower.tail = FALSE) # prints the p-value for each Mahalanobis distance
+sample_maha2 <- cbind(sample, Maha2, MahaPvalue2)
+sample_maha2 <- sample_maha2 %>% select(-acc_now_delinq)
+sample_maha_updated2 <- sample_maha2 %>% filter(MahaPvalue2 > 0.001) # only keep the rows which p-value is greater than 0.001 as those smaller than 0.001 are considered outliers
+sample_maha_outlier2 <- sample_maha2 %>% filter(MahaPvalue2 < 0.001)
+sample_maha_outlier2 <- sample_maha_outlier2[-c(18:19)]
+sample_maha_updated2 <- sample_maha_updated2[-c(18:19)]
+sample_maha2 <- sample_maha2[-c(18:19)]
+```
+
+Export outliers as csv to investigate further:
+```{r}
+write.csv(sample_maha_outlier2, "maha outliers.csv",row.names = FALSE)
+```
+
+
+For normalised sample:
+```{r}
+Maha <- mahalanobis(sample_norm, colMeans(sample_norm), cov(sample_norm))
+print(Maha)# prints Mahalanobis distance
+
+MahaPvalue <-pchisq(Maha, df=10,lower.tail = FALSE)# prints the p-value for each Mahalanobis distance
+sample_maha <- cbind(sample_norm, Maha, MahaPvalue)
+sample_maha <- sample_maha %>% select(-acc_now_delinq)
+sample_maha_outlier <- sample_maha %>% filter(MahaPvalue < 0.001)
+sample_maha_updated <- sample_maha %>% filter(MahaPvalue > 0.001)
+sample_maha_outlier <- sample_maha_outlier[-c(18:19)]
+sample_maha_updated <- sample_maha_updated[-c(18:19)]
+sample_maha <-sample_maha[-c(18:19)]
+```
+
+For normalised sample:
+```{r}
+numeric_sample <- as.data.frame(lapply(sample_maha_updated, as.numeric))
+correlation_matrix_spearman <- cor(numeric_sample, method = "spearman")
+print(correlation_matrix_spearman)
+
+# Visualize Spearman correlation matrix using corrplot
+corrplot(correlation_matrix_spearman, method = "color")
+corrplot(correlation_matrix_spearman, method = "color", addCoef.col = "black",
+         tl.col = "black", tl.srt = 45, tl.cex = 0.6,number.cex = 0.4, mar = c(0,0,1,0), width = 30, height = 30)
+```
+
+For sample: 
+```{r}
+numeric_sample <- as.data.frame(lapply(sample_maha_updated2, as.numeric))
+correlation_matrix_spearman <- cor(numeric_sample, method = "spearman")
+print(correlation_matrix_spearman)
+
+# Visualize Spearman correlation matrix using corrplot
+corrplot(correlation_matrix_spearman, method = "color")
+corrplot(correlation_matrix_spearman, method = "color", addCoef.col = "black",
+         tl.col = "black", tl.srt = 45, tl.cex = 0.6, number.cex = 0.4, mar = c(0,0,1,0), width = 30, height = 30)
+```
+
+We see that the correlation plots (after removal of outliers) for both unnormalised and normalised samples are the same, suggesting that the same outliers are removed irregardless of normalisation.
+
+We decide to remove outliers because they only represent 9.67% of the sample size, and is a small and non-representative group of observations as compared to the others. As cluster analysis is sensitive to outliers, we decide to remove outliers to avoid skewing our clusters.
+
+# Choose the attribute that have pairwise correlation coefficients >0.3
+```{r}
+sample_pca <- sample_maha_updated[, c(1, 2, 3, 5, 11, 12, 13, 15, 16 )] 
+lowerCor(sample_pca)
+```
+
+From the pairwise correlation coefficients of these attributes, we can see that many of them are above 0.3.
+
+## The Kaiser-Meyer-Olkin (KMO) test
+
+```{r}
+KMO(sample_pca)
+```
+
+KMO > 0.5 for most of these variables, then we conclude that they are highly correlated.
+
+## The Bartlett test
+```{r}
+cortest.bartlett(sample_pca)
+
+```
+
+The p value is < 0.05, hence there is sufficient multicollinearity for PCA.
+
+## PCA
+```{r}
+pcModel<-principal(sample_pca, 8, rotate="none", weights=TRUE, scores=TRUE)
+print(pcModel)
+print.psych(pcModel, cut=0.3, sort=TRUE)
+
+plot(pcModel$values, type="b")
+
+pcModel2<-principal(sample_pca, 2, rotate="none")
+print(pcModel2)
+
+```
+
+# Factor Analysis
+```{r}
+pcModel2o<-principal(sample_pca, 2, rotate="oblimin")
+print.psych(pcModel2o, cut=0.3, sort=TRUE)
+```
+
+```{r}
+pcModel3o<-principal(sample_pca, 3, rotate="oblimin")
+print.psych(pcModel3o, cut=0.3, sort=TRUE)
+```
+
+```{r}
+
+pcModel3q<-principal(sample_pca, 3, rotate="quartimax")
+print.psych(pcModel3q, cut=0.3, sort=TRUE)
+
+```
+
+## Cluster Analysis- Hierarchical Clustering
+
+# Define linkage methods
+```{r}
+# sample_ca <- sample_maha_updated %>% select(-acc_now_delinq)
+headTail(sample_maha_updated)
+m <- c("average", "single", "complete", "ward")
+names(m) <- c("average", "single", "complete", "ward")
+```
+
+# Function to compute agglomerative coefficient
+```{r}
+library(cluster)
+ac <- function(x){
+  agnes(sample_maha_updated, method =x)$ac
+}
+```
+
+# Calculate agglomerative coefficient for each clustering linkage method
+```{r}
+sapply(m, ac)
+
+# ward performs the best
+```
+
+
+```{r}
+# Produce plot of clusters vs. gap statistic
+library(factoextra)
+gap_stat_h1 <- clusGap(sample_maha_updated, FUN = hcut, rstart = 25, K.max = 10, B = 50)
+# gap_stat_k1 <- clusGap(sample_ca, FUN = kmeans, nstart = 25, K.max = 10, B = 50)
+gap_stat_h2 <- clusGap(sample_maha_updated, FUN = hcut, rstart = 25, K.max = 20, B = 50)
+# gap_stat_k2 <- clusGap(sample_ca, FUN = kmeans, nstart = 25, K.max = 20, B = 50)
+
+fviz_gap_stat(gap_stat_h1)
+fviz_gap_stat(gap_stat_h2)
+# Both plots shows the number of clusters should be 5 or 7
+
+# fviz_gap_stat(gap_stat_k1)
+# fviz_gap_stat(gap_stat_k2)
+
+```
+
+```{r}
+# Plot dandrogram
+# Finding distance matrix
+distance_mat1 <- dist(sample_maha_updated, method = "euclidean")
+
+set.seed(240)  # Setting seed
+Hierar_cl1 <- hclust(distance_mat1, method = "ward")
+
+Hierar_cl1
+
+plot(Hierar_cl1)
+
+```
+
+Silhouette plot for hcut
+```{r}
+fviz_nbclust(sample_maha_updated, hcut, method = "silhouette")
+```
+
+
+Create elbow plot (without outliers)
+```{r}
+fviz_nbclust(sample_maha_updated, hcut, method = "wss")
+```
+
+
+```{r}
+# Cutting tree by no. of clusters
+fit1 <- cutree(Hierar_cl1, k = 4 )
+fit1
+
+table(fit1)
+
+```
+
+
+```{r}
+# Hierarchical Clustering without Factor Analysis
+final_ca <- cbind(sample_maha_updated, cluster = fit1)
+head(final_ca)
+hcentres1 <- aggregate(x=final_ca, by=list(cluster=fit1), FUN="mean")
+print(hcentres1)
+
+```
+
+## Cluster Analysis- Non-Hierarchical Clustering
+
+```{r}
+library(factoextra)
+library(cluster)
+library(psychTools)
+library(readxl)
+gap_stat_k <- clusGap(sample_maha, FUN = kmeans, nstart = 25, K.max = 10, B = 50) # with outliers
+gap_stat_k2 <- clusGap(sample_maha_updated, FUN = kmeans, nstart = 25, K.max = 10, B = 50) # without Maha outliers
+```
+
+Produce Gap Statistic Plot
+```{r}
+fviz_gap_stat(gap_stat_k) # with outliers
+```
+
+Silhouette plot
+```{r}
+fviz_nbclust(sample_maha, kmeans, method = "silhouette") # with outliers
+```
+
+Create elbow plot (method 1)
+```{r}
+fviz_nbclust(sample_maha, kmeans, method = "wss") # with outliers
+```
+
+Elbow plot for kmeans (method 2)
+```{r}
+# Define a range of k values to explore (adjust based on your data)
+k_values <- 1:10
+
+# Empty list to store WSS for different k values
+wss_list <- list()
+
+# Function to calculate WSS within a loop
+calculate_wss <- function(data, k) {
+  # Perform K-Means clustering with specific k
+  kmeans_result <- kmeans(data, centers = k, nstart = 10)
+  
+  # Calculate within-cluster sum of squares
+  wss <- sum(kmeans_result$withinss)
+  return(wss)
+}
+
+# Loop through k values and calculate WSS
+for (k in k_values) {
+  wss_list[[k]] <- calculate_wss(sample_maha, k)
+}
+
+# Combine results into a data frame
+wss <- unlist(wss_list)
+elbow_data <- data.frame(k = k_values, wss = wss)
+
+# Create the ggplot for the elbow plot
+library(ggplot2)
+ggplot(elbow_data, aes(x = k, y = wss)) +
+  geom_line() +
+  labs(title = "Elbow Plot", x = "Number of Clusters (k)", y = "Within-Cluster Sum of Squares (WSS)") +
+  theme_classic() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)
+  ) +
+  scale_x_continuous(breaks = seq(0, 10, by=1))
+```
+
+Produce Gap Statistic Plot
+```{r}
+fviz_gap_stat(gap_stat_k2) # without outliers
+```
+
+Silhouette plot for kmeans
+```{r}
+fviz_nbclust(sample_maha_updated, kmeans, method = "silhouette")
+# without outliers
+```
+
+Elbow plot for kmeans (method 1)
+```{r}
+fviz_nbclust(sample_maha_updated, kmeans, method = "wss") # without outliers
+```
+
+Elbow plot for kmeans (method 2)
+```{r}
+# Define a range of k values to explore (adjust based on your data)
+k_values <- 1:10
+
+# Empty list to store WSS for different k values
+wss_list <- list()
+
+# Function to calculate WSS within a loop
+calculate_wss <- function(data, k) {
+  # Perform K-Means clustering with specific k
+  kmeans_result <- kmeans(data, centers = k, nstart = 10)
+  
+  # Calculate within-cluster sum of squares
+  wss <- sum(kmeans_result$withinss)
+  return(wss)
+}
+
+# Loop through k values and calculate WSS
+for (k in k_values) {
+  wss_list[[k]] <- calculate_wss(sample_maha_updated, k)
+}
+
+# Combine results into a data frame
+wss <- unlist(wss_list)
+elbow_data <- data.frame(k = k_values, wss = wss)
+
+# Create the ggplot for the elbow plot
+library(ggplot2)
+ggplot(elbow_data, aes(x = k, y = wss)) +
+  geom_line() +
+  labs(title = "Elbow Plot", x = "Number of Clusters (k)", y = "Within-Cluster Sum of Squares (WSS)") +
+  theme_classic() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12)
+  ) +
+  scale_x_continuous(breaks = seq(0, 10, by=1))
+```
+
+# Run k-means
+```{r}
+# k = 4
+set.seed(55)
+k_cl <- kmeans(sample_maha,4,nstart=25) # with outliers
+k_cl 
+```
+
+```{r}
+# k = 4
+set.seed(55)
+k_cl2 <- kmeans(sample_maha_updated,4,nstart=25) # without outliers
+k_cl2
+```
+
+# Show centroid values
+```{r}
+k_cl$centers # with outliers, k = 4
+```
+
+```{r}
+k_cl2$centers # without outliers, k=4
+k_cl_table<- k_cl2$centers
+```
+
+
+# Visualise clusters
+```{r}
+fviz_cluster(k_cl, data = sample_maha) # with outliers, k = 4
+```
+
+```{r}
+fviz_cluster(k_cl2, data = sample_maha_updated) # without outliers, k=4
+```
+
+
+# Assign cluster labels to each data point in original un-normalised sample
+```{r}
+# Hierarchical clustering:
+# without outliers, k=4
+sample_maha_updated22 <- sample_maha_updated2
+sample_maha_updated22$cluster <-fit1
+
+# K-means clustering:
+# with outliers, k=4
+sample_maha2$cluster <- k_cl$cluster
+
+# without outliers, k=4
+sample_maha_updated2$cluster <- k_cl2$cluster
+```
+
+# Left join labelled sample data with other variables in original population (df)
+```{r}
+
+# Hierarchical clustering:
+# without outliers, k=4
+result_h_wo <- merge(sample_maha_updated22, df, by = c("funded_amnt", "int_rate", "emp_length", "annual_inc", "dti", "inq_last_6mths", "pub_rec", "revol_bal", "revol_util", "total_acc", "tot_coll_amt", "tot_cur_bal", "total_credit_rv"), all.x = TRUE)
+
+n_distinct(result_h_wo$id) # double check that each and every row is unique
+
+write.csv(result_h_wo, "sample with outliers hcut k=4.csv",row.names = FALSE) # output as csv file for further analysis
+
+# K-means clustering:
+# with outliers, k=4
+result_k_w <- merge(sample_maha2, df, by = c("funded_amnt", "int_rate", "emp_length", "annual_inc", "dti", "inq_last_6mths", "pub_rec", "revol_bal", "revol_util", "total_acc", "tot_coll_amt", "tot_cur_bal", "total_credit_rv"), all.x = TRUE)
+
+n_distinct(result_k_w$id) # double check that each and every row is unique
+
+write.csv(result_k_w, "sample with outliers kmeans k=4.csv",row.names = FALSE) # output as csv file for further analysis
+
+# without outliers, k=4
+result_k_wo <- merge(sample_maha_updated2, df, by = c("funded_amnt", "int_rate", "emp_length", "annual_inc", "dti", "inq_last_6mths", "pub_rec", "revol_bal", "revol_util", "total_acc", "tot_coll_amt", "tot_cur_bal", "total_credit_rv"), all.x = TRUE)
+
+n_distinct(result_k_wo$id) # double check that each and every row is unique
+
+write.csv(result_k_wo, "sample without outliers kmeans k=4.csv",row.names = FALSE) # output as csv file for further analysis 
+```
+
+
+# See cluster size
+```{r}
+
+#Hierarchical Clustering:
+# k=4, without outliers
+table(fit1)
+
+# K-means clustering:
+# k=4, with outliers
+sample_maha2$cluster <- as.factor(sample_maha2$cluster)
+sample_maha2 %>%
+  count(cluster) 
+
+# k=4, without outliers
+sample_maha_updated2$cluster <- as.factor(sample_maha_updated2$cluster)
+sample_maha_updated2 %>%
+  count(cluster) 
+```
+
+
+## Internal Validation for Sample without Outlier
+
+We choose hierarchical clustering over kmeans because hierarchical produces more distinct clusters in which we can better interpret the customer segments, by stringing the variables of interest together in a narrative to describe each customer segment.
+
+Using domain knowledge, by looking at the centroid values, we can clearly identify 2 clusters consisting of high creditworthiness customers (using variables usually associated with creditworthiness, such as low interest rate, high credit grade, ) and 2 clusters consisting of low creditworthiness customers.
+
+Because the smallest cluster only has 24 data points, which is 4.43% of the sample size of 542, hence we decide to randomly take 200 data points for the validation sample in order to sample each cluster sufficiently.
+
+Extract validation sample of size 200
+```{r}
+set.seed(240)
+sample_validation <- sample_n(sample_maha_updated, 200)
+```
+
+Hierarchical Clustering for validation sample
+```{r}
+distance_validation <- dist(sample_validation, method = "euclidean")
+
+set.seed(240)  # Setting seed
+Hierar_valid <- hclust(distance_validation, method = "ward")
+
+Hierar_valid
+
+plot(Hierar_valid)
+
+# Cutting tree by no. of clusters
+fit2 <- cutree(Hierar_valid, k = 4 )
+fit2
+table(fit2)
+final_ca2 <- cbind(sample_validation, validation_cluster = fit2)
+head(final_ca2)
+hcentres2 <- aggregate(x=final_ca2, by=list(cluster=fit2), FUN="mean")
+print(hcentres2)
+```
+
+
+# Compare original cluster number to validation cluster number
+```{r}
+result_validation<- merge(final_ca2, final_ca, by = c("funded_amnt", "int_rate", "sub_grade", "emp_length", "annual_inc", "loan_status", "dti", "delinq_2yrs", "inq_last_6mths", "pub_rec", "revol_bal", "revol_util", "total_acc", "tot_coll_amt", "tot_cur_bal", "total_credit_rv", "months_since_last_credit_pull"), all.x = TRUE)
+
+# creates new column 'equal' that tells us whether original cluster number is equal to validation cluster number
+result_validation <- result_validation %>% mutate(equal = cluster == validation_cluster)
+
+# calculates the % of FALSE over total, which indicates the % if cases assigned to different cluster
+sum(result_validation$equal == FALSE)/nrow(result_validation)
+```
+
+55.5% of cases are assigned to a different cluster, suggesting that our solution is rather unstable.
